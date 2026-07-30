@@ -1,0 +1,85 @@
+name: audio2text
+region: lon
+
+ingress:
+  rules:
+    - match:
+        path:
+          prefix: /api
+      component:
+        name: backend
+    - match:
+        path:
+          prefix: /
+      component:
+        name: frontend
+
+services:
+  - name: backend
+    github:
+      repo: zhouxiaochi/Audio2Text
+      branch: main
+      deploy_on_push: true
+    dockerfile_path: Dockerfile.backend
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: basic-xs
+    health_check:
+      http_path: /health
+      initial_delay_seconds: 15
+      period_seconds: 30
+      timeout_seconds: 5
+      success_threshold: 1
+      failure_threshold: 3
+    envs:
+      - key: DATA_DIR
+        value: /tmp/audio2text
+        scope: RUN_TIME
+        type: GENERAL
+      - key: FRONTEND_ORIGIN
+        value: http://localhost:3000
+        scope: RUN_TIME
+        type: GENERAL
+      - key: TRANSCRIPTION_MODEL
+        value: openai/whisper-1
+        scope: RUN_TIME
+        type: GENERAL
+      - key: LLM_MODEL
+        value: openai/gpt-4o-mini
+        scope: RUN_TIME
+        type: GENERAL
+      - key: MAX_UPLOAD_BYTES
+        value: "314572800"
+        scope: RUN_TIME
+        type: GENERAL
+      - key: MAX_ACTIVE_JOBS
+        value: "1"
+        scope: RUN_TIME
+        type: GENERAL
+      - key: RETENTION_HOURS
+        value: "24"
+        scope: RUN_TIME
+        type: GENERAL
+      - key: REMOTE_BASE_URL
+        value: https://openrouter.ai/api/v1
+        scope: RUN_TIME
+        type: GENERAL
+      # Add REMOTE_API_KEY as an encrypted RUN_TIME variable in App Platform.
+
+  - name: frontend
+    github:
+      repo: zhouxiaochi/Audio2Text
+      branch: main
+      deploy_on_push: true
+    source_dir: frontend
+    dockerfile_path: frontend/Dockerfile
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    health_check:
+      http_path: /
+      initial_delay_seconds: 15
+      period_seconds: 30
+      timeout_seconds: 5
+      success_threshold: 1
+      failure_threshold: 3
