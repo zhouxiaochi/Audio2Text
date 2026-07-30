@@ -15,7 +15,8 @@ class Settings(BaseSettings):
     remote_base_url: str = "https://openrouter.ai/api/v1"
     remote_api_key: str = ""
     transcription_model: str = "openai/whisper-large-v3"
-    llm_model: str = "openai/gpt-4o-mini"
+    speaker_model: str = "openai/gpt-5-mini"
+    llm_model: str = "openai/gpt-5"
     frontend_origin: str = "http://localhost:3000"
     llm_batch_characters: int = 24000
     max_upload_bytes: int = 500 * 1024 * 1024

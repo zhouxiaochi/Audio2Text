@@ -83,8 +83,9 @@ winget install Gyan.FFmpeg
 ```powershell
 $env:REMOTE_BASE_URL = "https://openrouter.ai/api/v1"
 $env:REMOTE_API_KEY = "your-key"
-$env:TRANSCRIPTION_MODEL = "openai/whisper-1"
-$env:LLM_MODEL = "openai/gpt-4o-mini"
+$env:TRANSCRIPTION_MODEL = "openai/whisper-large-v3"
+$env:SPEAKER_MODEL = "openai/gpt-5-mini"
+$env:LLM_MODEL = "openai/gpt-5"
 ```
 
 完整配置项见 `.env.example`。如果使用 Docker，可通过 `--env-file .env`
@@ -191,7 +192,8 @@ doctl apps create --spec .do/app.yaml
 - `REMOTE_API_KEY`：必填，Secret/Encrypted。
 - `REMOTE_BASE_URL`：默认 `https://openrouter.ai/api/v1`。
 - `TRANSCRIPTION_MODEL`：OpenRouter STT 模型。
-- `LLM_MODEL`：说话人推断和翻译模型。
+- `SPEAKER_MODEL`：说话人推断模型，默认 `openai/gpt-5-mini`。
+- `LLM_MODEL`：翻译模型，默认 `openai/gpt-5`。
 - `DATA_DIR`：临时数据目录，演示环境为 `/tmp/audio2text`。
 - `MAX_UPLOAD_BYTES`：上传大小上限。
 - `MAX_ACTIVE_JOBS`：同时排队或处理的任务数。

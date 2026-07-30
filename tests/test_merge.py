@@ -1,4 +1,4 @@
-from backend.merge import merge_segments
+from backend.merge import merge_segments, split_long_segments
 from backend.models import TranscriptSegment
 
 
@@ -33,3 +33,22 @@ def test_merge_trims_partial_text_overlap():
     result = merge_segments(chunks)
 
     assert [segment.text for segment in result] == ["one two three", "four five"]
+
+
+def test_split_long_segments_preserves_text_and_time_range():
+    source = TranscriptSegment(
+        start=10,
+        end=40,
+        text=(
+            "Hello and welcome to the programme. I'm Feifei and this is Phil. "
+            "Today we are learning a useful expression. It is one size fits all."
+        ),
+    )
+
+    result = split_long_segments([source], max_characters=55)
+
+    assert len(result) > 1
+    assert result[0].start == 10
+    assert result[-1].end == 40
+    assert [item.id for item in result] == list(range(len(result)))
+    assert " ".join(item.text for item in result) == source.text

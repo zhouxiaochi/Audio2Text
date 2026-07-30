@@ -26,6 +26,46 @@ def _remove_text_overlap(previous: str, current: str, max_tokens: int = 80) -> s
     return "".join(current_parts[index:]).lstrip()
 
 
+def split_long_segments(
+    segments: list[TranscriptSegment], max_characters: int = 220
+) -> list[TranscriptSegment]:
+    """Split coarse STT segments into sentence-sized turns with estimated timestamps."""
+    result: list[TranscriptSegment] = []
+    for segment in segments:
+        sentences = [
+            item.strip()
+            for item in re.split(r"(?<=[.!?])\s+(?=[A-Z0-9\"'])", segment.text)
+            if item.strip()
+        ]
+        groups: list[str] = []
+        current = ""
+        for sentence in sentences or [segment.text]:
+            candidate = f"{current} {sentence}".strip()
+            if current and len(candidate) > max_characters:
+                groups.append(current)
+                current = sentence
+            else:
+                current = candidate
+        if current:
+            groups.append(current)
+        if len(groups) == 1:
+            result.append(segment)
+            continue
+        total_weight = sum(max(1, len(group)) for group in groups)
+        cursor = segment.start
+        duration = segment.end - segment.start
+        for index, group in enumerate(groups):
+            if index == len(groups) - 1:
+                end = segment.end
+            else:
+                end = cursor + duration * max(1, len(group)) / total_weight
+            result.append(TranscriptSegment(start=cursor, end=end, text=group))
+            cursor = end
+    for index, segment in enumerate(result):
+        segment.id = index
+    return result
+
+
 def merge_segments(chunk_segments: list[list[TranscriptSegment]]) -> list[TranscriptSegment]:
     """Merge timestamped chunks and remove duplicate text from overlap windows."""
 
@@ -50,6 +90,4 @@ def merge_segments(chunk_segments: list[list[TranscriptSegment]]) -> list[Transc
                 previous.end = max(previous.end, segment.end)
                 continue
             merged.append(segment)
-    for index, segment in enumerate(merged):
-        segment.id = index
-    return merged
+    return split_long_segments(merged)

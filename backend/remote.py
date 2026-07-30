@@ -101,28 +101,73 @@ class RemoteClient:
             content = content.split("\n", 1)[1].rsplit("```", 1)[0]
         return json.loads(content)
 
-    async def _structured_chat(self, prompt: str, schema: type[T]) -> T:
-        response = await self._request(
-            "POST",
-            "/chat/completions",
-            json={
-                "model": self.settings.llm_model,
-                "temperature": 0,
-                "response_format": {"type": "json_object"},
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "Return only strict JSON matching the requested schema. Never omit IDs.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
+    async def _structured_chat(self, prompt: str, schema: type[T], model: str) -> T:
+        last_error: Exception | None = None
+        messages = [
+            {
+                "role": "system",
+                "content": "Return only strict JSON matching the requested schema. Never omit IDs.",
             },
+            {"role": "user", "content": prompt},
+        ]
+        for attempt in range(3):
+            response = await self._request(
+                "POST",
+                "/chat/completions",
+                json={
+                    "model": model,
+                    "response_format": {"type": "json_object"},
+                    "messages": messages,
+                },
+            )
+            try:
+                content = response.json()["choices"][0]["message"]["content"]
+                return schema.model_validate(self._extract_json(content))
+            except (KeyError, IndexError, TypeError, json.JSONDecodeError, ValidationError) as exc:
+                last_error = exc
+                messages.extend(
+                    [
+                        {"role": "assistant", "content": content if "content" in locals() else "{}"},
+                        {
+                            "role": "user",
+                            "content": (
+                                f"That response failed schema validation: {exc}. "
+                                "Return a corrected complete JSON object only."
+                            ),
+                        },
+                    ]
+                )
+        raise RemoteError(f"LLM returned invalid structured output after retries: {last_error}")
+
+    async def _complete_id_set(
+        self,
+        prompt: str,
+        schema: type[T],
+        expected: set[int],
+        items_attribute: str,
+        id_attribute: str,
+        model: str,
+    ) -> T:
+        last_ids: set[int] = set()
+        for attempt in range(3):
+            suffix = ""
+            if attempt:
+                missing = sorted(expected - last_ids)
+                suffix = (
+                    f"\nYour previous response was incomplete. Return exactly these segment IDs: "
+                    f"{sorted(expected)}. "
+                    f"Missing IDs were: {missing}. Do not duplicate IDs."
+                )
+            result = await self._structured_chat(prompt + suffix, schema, model)
+            items = getattr(result, items_attribute)
+            ids = [getattr(item, id_attribute) for item in items]
+            last_ids = set(ids)
+            if last_ids == expected and len(ids) == len(expected):
+                return result
+        raise RemoteError(
+            f"LLM did not return exactly one item per segment; expected {sorted(expected)}, "
+            f"received {sorted(last_ids)}"
         )
-        try:
-            content = response.json()["choices"][0]["message"]["content"]
-            return schema.model_validate(self._extract_json(content))
-        except (KeyError, IndexError, TypeError, json.JSONDecodeError, ValidationError) as exc:
-            raise RemoteError(f"LLM returned invalid structured output: {exc}") from exc
 
     async def infer_speakers(self, segments: list[TranscriptSegment]) -> SpeakerInference:
         turns: list[SpeakerTurn] = []
@@ -162,12 +207,15 @@ class RemoteClient:
             '{"turns":[{"segment_id":0,"speaker":"Speaker 1"}]} with exactly one turn per segment. '
             f"Transcript: {json.dumps(rows, ensure_ascii=False)}"
         )
-        result = await self._structured_chat(prompt, SpeakerInference)
-        expected = {segment.id for segment in segments}
-        actual = {turn.segment_id for turn in result.turns}
-        if actual != expected or len(result.turns) != len(expected):
-            raise RemoteError("speaker inference did not return exactly one item per segment")
-        return result
+        expected = {segment.id for segment in segments if segment.id is not None}
+        return await self._complete_id_set(
+            prompt,
+            SpeakerInference,
+            expected,
+            "turns",
+            "segment_id",
+            self.settings.speaker_model,
+        )
 
     async def translate_zh(self, segments: list[TranscriptSegment]) -> TranslationResult:
         translations: list[TranslationItem] = []
@@ -188,14 +236,18 @@ class RemoteClient:
             for segment in segments
         ]
         prompt = (
-            "Translate every transcript segment into natural Simplified Chinese, preserving meaning, "
-            "names, numbers, and technical terms. Return "
+            "Translate each transcript segment independently into natural Simplified Chinese, "
+            "preserving meaning, names, numbers, and technical terms. The translation for an ID "
+            "must contain only that ID's source text; never move text between IDs. Return "
             '{"translations":[{"segment_id":0,"translation_zh":"..."}]} with exactly one item per '
             f"segment. Transcript: {json.dumps(rows, ensure_ascii=False)}"
         )
-        result = await self._structured_chat(prompt, TranslationResult)
-        expected = {segment.id for segment in segments}
-        actual = {item.segment_id for item in result.translations}
-        if actual != expected or len(result.translations) != len(expected):
-            raise RemoteError("translation did not return exactly one item per segment")
-        return result
+        expected = {segment.id for segment in segments if segment.id is not None}
+        return await self._complete_id_set(
+            prompt,
+            TranslationResult,
+            expected,
+            "translations",
+            "segment_id",
+            self.settings.llm_model,
+        )
