@@ -8,9 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Runtime configuration loaded from environment variables."""
 
-    model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", extra="ignore", case_sensitive=False
-    )
+    model_config = SettingsConfigDict(extra="ignore", case_sensitive=False)
 
     data_dir: Path = Path("data")
     database_path: Path | None = None

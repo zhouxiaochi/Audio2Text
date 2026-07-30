@@ -5,17 +5,12 @@ ingress:
   rules:
     - match:
         path:
-          prefix: /api
-      component:
-        name: backend
-    - match:
-        path:
           prefix: /
       component:
-        name: frontend
+        name: web
 
 services:
-  - name: backend
+  - name: web
     github:
       repo: zhouxiaochi/Audio2Text
       branch: main
@@ -25,7 +20,7 @@ services:
     instance_count: 1
     instance_size_slug: basic-xs
     health_check:
-      http_path: /health
+      http_path: /api/health
       initial_delay_seconds: 15
       period_seconds: 30
       timeout_seconds: 5
@@ -64,22 +59,28 @@ services:
         value: https://openrouter.ai/api/v1
         scope: RUN_TIME
         type: GENERAL
-      # Add REMOTE_API_KEY as an encrypted RUN_TIME variable in App Platform.
+      - key: REMOTE_API_KEY
+        value: SET_IN_DIGITALOCEAN_CONSOLE
+        scope: RUN_TIME
+        type: SECRET
+      - key: CHUNK_SECONDS
+        value: "480"
+        scope: RUN_TIME
+        type: GENERAL
+      - key: OVERLAP_SECONDS
+        value: "8"
+        scope: RUN_TIME
+        type: GENERAL
+      - key: LLM_BATCH_CHARACTERS
+        value: "24000"
+        scope: RUN_TIME
+        type: GENERAL
+      - key: REQUEST_TIMEOUT_SECONDS
+        value: "180"
+        scope: RUN_TIME
+        type: GENERAL
+      - key: REMOTE_MAX_RETRIES
+        value: "4"
+        scope: RUN_TIME
+        type: GENERAL
 
-  - name: frontend
-    github:
-      repo: zhouxiaochi/Audio2Text
-      branch: main
-      deploy_on_push: true
-    source_dir: frontend
-    dockerfile_path: frontend/Dockerfile
-    http_port: 8080
-    instance_count: 1
-    instance_size_slug: basic-xxs
-    health_check:
-      http_path: /
-      initial_delay_seconds: 15
-      period_seconds: 30
-      timeout_seconds: 5
-      success_threshold: 1
-      failure_threshold: 3

@@ -78,16 +78,18 @@ winget install Gyan.FFmpeg
 
 ## 配置
 
-项目根目录的 `.env` 至少需要以下值：
+应用只读取进程环境变量。PowerShell 本地开发可以这样设置：
 
-```dotenv
-REMOTE_BASE_URL=https://openrouter.ai/api/v1
-REMOTE_API_KEY=your-key
-TRANSCRIPTION_MODEL=openai/whisper-1
-LLM_MODEL=anthropic/claude-sonnet-4
+```powershell
+$env:REMOTE_BASE_URL = "https://openrouter.ai/api/v1"
+$env:REMOTE_API_KEY = "your-key"
+$env:TRANSCRIPTION_MODEL = "openai/whisper-1"
+$env:LLM_MODEL = "openai/gpt-4o-mini"
 ```
 
-完整配置项见 `.env.example`。真实 `.env` 已被 Git 忽略，不要提交 API Key。
+完整配置项见 `.env.example`。如果使用 Docker，可通过 `--env-file .env`
+显式注入；应用不会自动加载工作目录中的 `.env`。真实 `.env` 已被 Git
+忽略，不要提交 API Key。
 
 模型需分别支持 OpenRouter 的 `/audio/transcriptions` 和
 `/chat/completions` 接口。不同模型对 `verbose_json`、时间戳和 JSON Schema
@@ -146,17 +148,18 @@ API Key 或上传真实音频。
 
 ## DigitalOcean App Platform 演示部署
 
-仓库包含两个生产镜像：
+仓库包含一个 DigitalOcean 生产镜像：
 
-- `Dockerfile`：Python 3.12、FastAPI、FFmpeg、ffprobe 和 Noto CJK 字体。
-- `frontend/Dockerfile`：Node.js 22 与 Next.js standalone 服务。
+- `Dockerfile`：Next.js standalone、Python 3.12、FastAPI、FFmpeg、ffprobe
+  和 Noto CJK 字体。
 
-`.do/app.yaml` 将 `/api` 路由到后端，并将其余请求路由到前端。DigitalOcean
-会为默认域名提供 HTTPS。部署前需要：
+单个 Web Service 由 Next.js 对外监听 `$PORT`，并将 `/api/*` 转发给同容器
+内监听 8000 的 FastAPI。DigitalOcean 会为默认域名提供 HTTPS。部署前需要：
 
-1. 将 `.do/app.yaml` 中两个 `github.repo` 改为实际的 `owner/repository`；
+1. 将 `.do/app.yaml` 中的 `github.repo` 改为实际的 `owner/repository`；
 2. 按实际区域调整 `region`；
-3. 在 App Platform 后端组件添加加密的运行时变量 `REMOTE_API_KEY`；
+3. 在 App Platform 后端组件的 Environment Variables 中找到
+   `REMOTE_API_KEY`，将值替换为真实 Key，并启用 Encrypt；
 4. 如模型不同，覆盖 `TRANSCRIPTION_MODEL` 和 `LLM_MODEL`；
 5. 当前前后端采用同域 `/api` 路由，浏览器不触发 CORS；只有拆分为不同域名时
    才需要将 `FRONTEND_ORIGIN` 更新为实际前端 Origin。
@@ -180,3 +183,22 @@ doctl apps create --spec .do/app.yaml
 不要横向扩展后端，也不要把 Uvicorn worker 数量设为大于 1。正式使用必须将
 任务状态迁移到 PostgreSQL，并将音频与产物迁移到 Spaces/S3；公开服务还应
 增加认证、用户配额和基于网关的限流。
+
+### DigitalOcean Environment Variables
+
+后端组件全部通过 Runtime Environment Variables 配置：
+
+- `REMOTE_API_KEY`：必填，Secret/Encrypted。
+- `REMOTE_BASE_URL`：默认 `https://openrouter.ai/api/v1`。
+- `TRANSCRIPTION_MODEL`：OpenRouter STT 模型。
+- `LLM_MODEL`：说话人推断和翻译模型。
+- `DATA_DIR`：临时数据目录，演示环境为 `/tmp/audio2text`。
+- `MAX_UPLOAD_BYTES`：上传大小上限。
+- `MAX_ACTIVE_JOBS`：同时排队或处理的任务数。
+- `RETENTION_HOURS`：终态任务保留时间。
+- `CHUNK_SECONDS`、`OVERLAP_SECONDS`：音频切片参数。
+- `LLM_BATCH_CHARACTERS`：LLM 文本批次大小。
+- `REQUEST_TIMEOUT_SECONDS`、`REMOTE_MAX_RETRIES`：远端请求策略。
+
+这些变量设置在唯一的 `web` 组件。前端生产环境使用同域 `/api`，不需要设置
+`NEXT_PUBLIC_API_URL`。
