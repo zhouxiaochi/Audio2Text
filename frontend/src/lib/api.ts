@@ -50,6 +50,7 @@ async function withMarkdown(job: BackendJob): Promise<AudioTask> {
     filename: job.original_filename,
     status: frontendStatus(job),
     markdown,
+    error: job.error ?? undefined,
   };
 }
 
