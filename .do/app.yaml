@@ -20,7 +20,7 @@ services:
       repo: zhouxiaochi/Audio2Text
       branch: main
       deploy_on_push: true
-    dockerfile_path: Dockerfile.backend
+    dockerfile_path: Dockerfile
     http_port: 8080
     instance_count: 1
     instance_size_slug: basic-xs

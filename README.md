@@ -148,7 +148,7 @@ API Key 或上传真实音频。
 
 仓库包含两个生产镜像：
 
-- `Dockerfile.backend`：Python 3.12、FastAPI、FFmpeg、ffprobe 和 Noto CJK 字体。
+- `Dockerfile`：Python 3.12、FastAPI、FFmpeg、ffprobe 和 Noto CJK 字体。
 - `frontend/Dockerfile`：Node.js 22 与 Next.js standalone 服务。
 
 `.do/app.yaml` 将 `/api` 路由到后端，并将其余请求路由到前端。DigitalOcean
