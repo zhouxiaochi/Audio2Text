@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import mongomock
 import pytest
 
 from backend.db import JobStore
@@ -7,9 +8,11 @@ from backend.models import JobStatus
 
 
 def test_job_lifecycle_and_checkpoint(tmp_path: Path):
-    store = JobStore(tmp_path / "jobs.sqlite3")
+    store = JobStore("mongodb://test", "audio2text", client=mongomock.MongoClient())
     store.initialize()
-    job = store.create_job("job-1", "sample.wav", tmp_path / "sample.wav")
+    source = tmp_path / "sample.wav"
+    source.write_bytes(b"audio")
+    job = store.create_job("job-1", "user-1", "sample.wav", source)
 
     assert job.status == JobStatus.QUEUED
     assert store.claim_next().id == job.id
@@ -23,9 +26,11 @@ def test_job_lifecycle_and_checkpoint(tmp_path: Path):
 
 
 def test_retry_rejects_active_job(tmp_path: Path):
-    store = JobStore(tmp_path / "jobs.sqlite3")
+    store = JobStore("mongodb://test", "audio2text", client=mongomock.MongoClient())
     store.initialize()
-    store.create_job("job-1", "sample.wav", tmp_path / "sample.wav")
+    source = tmp_path / "sample.wav"
+    source.write_bytes(b"audio")
+    store.create_job("job-1", "user-1", "sample.wav", source)
 
     with pytest.raises(ValueError):
         store.retry("job-1")

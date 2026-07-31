@@ -7,6 +7,8 @@ data/
 *.sqlite3*
 .env
 .env.local
+.env.mongo
+mango
 .venv/
 __pycache__/
 *.py[cod]

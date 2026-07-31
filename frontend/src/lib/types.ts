@@ -41,6 +41,22 @@ export interface SaveMarkdownPayload {
   markdown: string;
 }
 
+export interface Account {
+  id: string;
+  username: string;
+  role: "user" | "admin";
+  balance_usd: number;
+  created_at: string;
+}
+
+export interface AdminSummary {
+  users: number;
+  jobs: number;
+  raw_cost_usd: number;
+  billable_usd: number;
+  pending_cost_events: number;
+}
+
 export interface BackendJob {
   id: string;
   original_filename?: string;

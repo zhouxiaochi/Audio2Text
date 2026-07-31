@@ -1,24 +1,47 @@
 from pathlib import Path
 
+import mongomock
 from fastapi.testclient import TestClient
 
 from backend.api import create_app
 from backend.config import Settings
+from backend.db import JobStore
 
 
 def make_settings(tmp_path: Path) -> Settings:
     return Settings(
         _env_file=None,
         data_dir=tmp_path,
-        database_path=tmp_path / "test.sqlite3",
+        mongodb_uri="mongodb://test",
+        mongodb_database="audio2text",
+        session_secret="test-secret",
         worker_poll_seconds=60,
         max_upload_bytes=20,
+        minimum_upload_credit_usd=0,
     )
 
 
-def test_create_list_and_get_job(tmp_path: Path):
+def make_app(tmp_path: Path):
     app = create_app(make_settings(tmp_path))
-    with TestClient(app) as client:
+    store = JobStore("mongodb://test", "audio2text", client=mongomock.MongoClient())
+    store.initialize()
+    app.state.store = store
+    return app
+
+
+def authenticate(client: TestClient) -> None:
+    assert client.post(
+        "/auth/register", json={"username": "tester", "password": "strong-password"}
+    ).status_code == 201
+    assert client.post(
+        "/auth/login", json={"username": "tester", "password": "strong-password"}
+    ).status_code == 200
+
+
+def test_create_list_and_get_job(tmp_path: Path):
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="https://testserver") as client:
+        authenticate(client)
         response = client.post(
             "/jobs", files={"file": ("recording.wav", b"not-a-real-wave", "audio/wav")}
         )
@@ -32,8 +55,8 @@ def test_create_list_and_get_job(tmp_path: Path):
 
 
 def test_cors_allows_configured_frontend(tmp_path: Path):
-    app = create_app(make_settings(tmp_path))
-    with TestClient(app) as client:
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="https://testserver") as client:
         response = client.options(
             "/jobs",
             headers={
@@ -46,8 +69,8 @@ def test_cors_allows_configured_frontend(tmp_path: Path):
 
 
 def test_deployment_discloses_ephemeral_storage(tmp_path: Path):
-    app = create_app(make_settings(tmp_path))
-    with TestClient(app) as client:
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="https://testserver") as client:
         response = client.get("/deployment")
         assert response.status_code == 200
         assert response.json()["persistent"] is False
@@ -55,8 +78,9 @@ def test_deployment_discloses_ephemeral_storage(tmp_path: Path):
 
 
 def test_upload_validation(tmp_path: Path):
-    app = create_app(make_settings(tmp_path))
-    with TestClient(app) as client:
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="https://testserver") as client:
+        authenticate(client)
         assert (
             client.post("/jobs", files={"file": ("notes.txt", b"text", "text/plain")}).status_code
             == 415
@@ -74,8 +98,9 @@ def test_upload_validation(tmp_path: Path):
 
 
 def test_active_job_limit(tmp_path: Path):
-    app = create_app(make_settings(tmp_path))
-    with TestClient(app) as client:
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="https://testserver") as client:
+        authenticate(client)
         first = client.post(
             "/jobs", files={"file": ("first.wav", b"audio", "audio/wav")}
         )
@@ -87,8 +112,9 @@ def test_active_job_limit(tmp_path: Path):
 
 
 def test_markdown_save_read_and_docx(tmp_path: Path):
-    app = create_app(make_settings(tmp_path))
-    with TestClient(app) as client:
+    app = make_app(tmp_path)
+    with TestClient(app, base_url="https://testserver") as client:
+        authenticate(client)
         created = client.post(
             "/jobs", files={"file": ("recording.wav", b"content", "audio/wav")}
         ).json()

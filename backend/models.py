@@ -79,6 +79,7 @@ class JobRecord(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
+    user_id: str
     original_filename: str
     source_path: str
     status: JobStatus
@@ -107,3 +108,23 @@ class JobCreateResponse(BaseModel):
 
 class Message(BaseModel):
     message: str
+
+
+class UserPublic(BaseModel):
+    id: str
+    username: str
+    role: str
+    balance_usd: float
+    created_at: str
+
+
+class AuthCredentials(BaseModel):
+    username: str = Field(min_length=3, max_length=32, pattern=r"^[A-Za-z0-9_.-]+$")
+    password: str = Field(min_length=8, max_length=256)
+
+
+class CreditTopUp(BaseModel):
+    username: str
+    amount_usd: float = Field(gt=0, le=100000)
+    note: str = Field(default="", max_length=240)
+    idempotency_key: str = Field(min_length=8, max_length=128)

@@ -11,7 +11,13 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", case_sensitive=False)
 
     data_dir: Path = Path("data")
-    database_path: Path | None = None
+    mongodb_uri: str = ""
+    mongodb_database: str = "audio2text"
+    session_secret: str = ""
+    session_days: int = 14
+    minimum_upload_credit_usd: float = 1.0
+    admin_initial_username: str = ""
+    admin_initial_password: str = ""
     remote_base_url: str = "https://openrouter.ai/api/v1"
     remote_api_key: str = ""
     transcription_model: str = "openai/whisper-large-v3"
@@ -43,10 +49,6 @@ class Settings(BaseSettings):
     retention_hours: int = 24
 
     @property
-    def db_path(self) -> Path:
-        return self.database_path or self.data_dir / "audio2text.sqlite3"
-
-    @property
     def uploads_dir(self) -> Path:
         return self.data_dir / "uploads"
 
@@ -58,7 +60,6 @@ class Settings(BaseSettings):
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
 
 @lru_cache

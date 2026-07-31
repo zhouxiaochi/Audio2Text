@@ -31,6 +31,30 @@ services:
         value: /tmp/audio2text
         scope: RUN_TIME
         type: GENERAL
+      - key: MONGODB_URI
+        value: SET_IN_DIGITALOCEAN_CONSOLE
+        scope: RUN_TIME
+        type: SECRET
+      - key: MONGODB_DATABASE
+        value: audio2text
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SESSION_SECRET
+        value: SET_IN_DIGITALOCEAN_CONSOLE
+        scope: RUN_TIME
+        type: SECRET
+      - key: ADMIN_INITIAL_USERNAME
+        value: SET_IN_DIGITALOCEAN_CONSOLE
+        scope: RUN_TIME
+        type: SECRET
+      - key: ADMIN_INITIAL_PASSWORD
+        value: SET_IN_DIGITALOCEAN_CONSOLE
+        scope: RUN_TIME
+        type: SECRET
+      - key: MINIMUM_UPLOAD_CREDIT_USD
+        value: "1.00"
+        scope: RUN_TIME
+        type: GENERAL
       - key: FRONTEND_ORIGIN
         value: http://localhost:3000
         scope: RUN_TIME

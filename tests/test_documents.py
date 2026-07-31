@@ -8,6 +8,7 @@ from backend.models import JobRecord, JobStatus, TranscriptSegment
 def test_markdown_and_docx_rendering(tmp_path: Path):
     job = JobRecord(
         id="job-1",
+        user_id="user-1",
         original_filename="meeting.wav",
         source_path="meeting.wav",
         status=JobStatus.PROCESSING,

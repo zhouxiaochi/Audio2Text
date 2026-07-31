@@ -16,7 +16,7 @@ import {
   formatBytes,
   validateAudioFile,
 } from "@/lib/file";
-import type { AudioTask, TaskStatus } from "@/lib/types";
+import type { Account, AudioTask, TaskStatus } from "@/lib/types";
 import {
   CheckIcon,
   DownloadIcon,
@@ -75,7 +75,7 @@ function suggestedName(task: AudioTask, extension: string): string {
   return `${source.replace(/\.[^.]+$/, "")}.${extension}`;
 }
 
-export function AudioWorkspace() {
+export function AudioWorkspace({ account }: { account: Account }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -110,8 +110,11 @@ export function AudioWorkspace() {
         }
       } catch (error) {
         if (!cancelled) {
-          setLocalError(error instanceof Error ? error.message : "获取任务状态失败。");
-          pollTimer.current = setTimeout(poll, 4000);
+          const message = error instanceof Error ? error.message : "获取任务状态失败。";
+          setLocalError(message);
+          if (!/任务不存在|已过期/.test(message)) {
+            pollTimer.current = setTimeout(poll, 4000);
+          }
         }
       }
     };
@@ -242,7 +245,7 @@ export function AudioWorkspace() {
         </div>
         <div className="status-chip">
           <span className="status-dot" />
-          本地工作台
+          {account.username} · 余额 ${account.balance_usd.toFixed(2)}
         </div>
       </header>
 
@@ -252,7 +255,7 @@ export function AudioWorkspace() {
       <section className="hero">
         <p className="eyebrow">AUDIO TO DOCUMENT</p>
         <h1>让每段声音，都成为<br /><span>清晰的文字。</span></h1>
-        <p className="hero-copy">上传录音，自动完成转写、翻译与文档整理。<br className="desktop-break" />所有处理都在你的本地工作流中完成。</p>
+        <p className="hero-copy">上传录音，自动完成转写、翻译与文档整理。<br className="desktop-break" />处理费用按 OpenRouter 实际成本的 5 倍结算。</p>
         <p className="deployment-warning">
           演示环境使用临时存储：部署或服务重启会清除任务，请完成后立即下载产物。
         </p>

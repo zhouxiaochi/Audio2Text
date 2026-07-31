@@ -4,14 +4,24 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 
 from backend.config import Settings, get_settings
 from backend.db import JobStore
 from backend.documents import render_docx
-from backend.models import JobCreateResponse, JobList, JobRecord, MarkdownPayload, Message
+from backend.auth import COOKIE_NAME, create_session, current_user, password_hash, require_admin
+from backend.models import (
+    AuthCredentials,
+    CreditTopUp,
+    JobCreateResponse,
+    JobList,
+    JobRecord,
+    MarkdownPayload,
+    Message,
+    UserPublic,
+)
 from backend.pipeline import Pipeline
 from backend.remote import RemoteClient
 from backend.worker import Worker
@@ -26,8 +36,17 @@ def safe_filename(filename: str) -> str:
 async def lifespan(app: FastAPI):
     settings: Settings = app.state.settings
     settings.prepare()
-    store = JobStore(settings.db_path)
+    store = getattr(app.state, "store", None) or JobStore(
+        settings.mongodb_uri, settings.mongodb_database
+    )
     store.initialize()
+    if settings.admin_initial_username and settings.admin_initial_password:
+        if store.get_user_by_username(settings.admin_initial_username) is None:
+            store.create_user(
+                settings.admin_initial_username,
+                password_hash.hash(settings.admin_initial_password),
+                role="admin",
+            )
     remote = RemoteClient(settings)
     pipeline = Pipeline(settings, store, remote)
     worker = Worker(settings, store, pipeline)
@@ -42,6 +61,7 @@ async def lifespan(app: FastAPI):
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         await remote.close()
+        store.close()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -50,7 +70,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[app.state.settings.frontend_origin],
-        allow_credentials=False,
+        allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -58,11 +78,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def store(request: Request) -> JobStore:
         return request.app.state.store
 
-    def get_job_or_404(job_id: str, db: JobStore) -> JobRecord:
+    def get_job_or_404(job_id: str, db: JobStore, user: dict) -> JobRecord:
         try:
-            return db.get_job(job_id)
+            job = db.get_job(job_id)
         except KeyError as exc:
-            raise HTTPException(status_code=404, detail="job not found") from exc
+            raise HTTPException(status_code=404, detail="任务不存在或已过期。") from exc
+        if user["role"] != "admin" and job.user_id != str(user["_id"]):
+            raise HTTPException(status_code=403, detail="无权访问此任务。")
+        return job
 
     @app.get("/health", response_model=Message)
     async def health() -> Message:
@@ -78,6 +101,82 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "max_active_jobs": settings.max_active_jobs,
         }
 
+    @app.post("/auth/register", response_model=UserPublic, status_code=201)
+    async def register(credentials: AuthCredentials, request: Request) -> UserPublic:
+        try:
+            user = request.app.state.store.create_user(
+                credentials.username, password_hash.hash(credentials.password)
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return UserPublic.model_validate(user)
+
+    @app.post("/auth/login", response_model=UserPublic)
+    async def login(credentials: AuthCredentials, request: Request, response: Response) -> UserPublic:
+        db: JobStore = request.app.state.store
+        user = db.get_user_by_username(credentials.username)
+        if user is None or not password_hash.verify(credentials.password, user["password_hash"]):
+            raise HTTPException(status_code=401, detail="用户名或密码错误。")
+        token, expires_at = create_session(db, str(user["_id"]), request.app.state.settings)
+        response.set_cookie(
+            COOKIE_NAME,
+            token,
+            httponly=True,
+            secure=bool(request.app.state.settings.session_secret),
+            samesite="lax",
+            expires=expires_at,
+            path="/",
+        )
+        return UserPublic.model_validate(db._public_user(user))
+
+    @app.post("/auth/logout", response_model=Message)
+    async def logout(request: Request, response: Response) -> Message:
+        token = request.cookies.get(COOKIE_NAME)
+        if token:
+            request.app.state.store.revoke_session(token)
+        response.delete_cookie(COOKIE_NAME, path="/")
+        return Message(message="已退出登录。")
+
+    @app.get("/auth/me", response_model=UserPublic)
+    async def me(request: Request) -> UserPublic:
+        return UserPublic.model_validate(request.app.state.store._public_user(current_user(request)))
+
+    @app.get("/admin/summary")
+    async def admin_summary(request: Request) -> dict:
+        require_admin(request)
+        return request.app.state.store.admin_summary()
+
+    @app.get("/admin/users")
+    async def admin_users(
+        request: Request, limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)
+    ) -> dict:
+        require_admin(request)
+        items, total = request.app.state.store.list_users(limit, offset)
+        return {"items": items, "total": total}
+
+    @app.get("/admin/usage")
+    async def admin_usage(
+        request: Request, limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)
+    ) -> dict:
+        require_admin(request)
+        items, total = request.app.state.store.list_usage_events(limit, offset)
+        return {"items": items, "total": total}
+
+    @app.post("/admin/credits", response_model=UserPublic)
+    async def admin_top_up(payload: CreditTopUp, request: Request) -> UserPublic:
+        admin = require_admin(request)
+        try:
+            user = request.app.state.store.top_up(
+                payload.username,
+                payload.amount_usd,
+                payload.note,
+                str(admin["_id"]),
+                payload.idempotency_key,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="用户不存在。") from exc
+        return UserPublic.model_validate(user)
+
     @app.post("/jobs", response_model=JobCreateResponse, status_code=201)
     async def create_job(
         file: UploadFile = File(...),
@@ -85,8 +184,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request: Request = None,
     ) -> JobCreateResponse:
         settings: Settings = request.app.state.settings
+        user = current_user(request)
+        user_id = str(user["_id"])
+        if not db.has_minimum_credit(user_id, settings.minimum_upload_credit_usd):
+            raise HTTPException(
+                status_code=402,
+                detail=f"余额不足，上传任务至少需要 ${settings.minimum_upload_credit_usd:.2f} 额度。",
+            )
         db.cleanup_expired(settings.jobs_dir, settings.uploads_dir, settings.retention_hours)
-        if db.count_active() >= settings.max_active_jobs:
+        if db.count_active(user_id) >= settings.max_active_jobs:
             raise HTTPException(
                 status_code=429,
                 detail="another audio job is already queued or processing; try again later",
@@ -107,7 +213,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     output.write(chunk)
             if total == 0:
                 raise HTTPException(status_code=400, detail="empty upload")
-            job = db.create_job(job_id, filename, destination)
+            job = db.create_job(job_id, user_id, filename, destination)
         except Exception:
             destination.unlink(missing_ok=True)
             raise
@@ -117,22 +223,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/jobs", response_model=JobList)
     async def list_jobs(
+        request: Request,
         limit: int = Query(100, ge=1, le=500),
         offset: int = Query(0, ge=0),
         db: JobStore = Depends(store),
     ) -> JobList:
-        items, total = db.list_jobs(limit, offset)
+        user = current_user(request)
+        items, total = db.list_jobs(
+            None if user["role"] == "admin" else str(user["_id"]), limit, offset
+        )
         return JobList(items=items, total=total)
 
     @app.get("/jobs/{job_id}", response_model=JobRecord)
-    async def get_job(job_id: str, db: JobStore = Depends(store)) -> JobRecord:
-        return get_job_or_404(job_id, db)
+    async def get_job(job_id: str, request: Request, db: JobStore = Depends(store)) -> JobRecord:
+        return get_job_or_404(job_id, db, current_user(request))
 
     @app.get("/jobs/{job_id}/markdown", response_class=PlainTextResponse)
     async def get_markdown(
         job_id: str, request: Request, db: JobStore = Depends(store)
     ) -> str:
-        get_job_or_404(job_id, db)
+        get_job_or_404(job_id, db, current_user(request))
         path = request.app.state.settings.jobs_dir / job_id / "transcript.md"
         if not path.exists():
             raise HTTPException(status_code=409, detail="Markdown is not available")
@@ -145,15 +255,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request: Request,
         db: JobStore = Depends(store),
     ) -> Message:
-        get_job_or_404(job_id, db)
+        get_job_or_404(job_id, db, current_user(request))
         path = request.app.state.settings.jobs_dir / job_id / "transcript.md"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(payload.markdown, encoding="utf-8")
         return Message(message="Markdown saved")
 
     @app.post("/jobs/{job_id}/retry", response_model=JobRecord)
-    async def retry_job(job_id: str, db: JobStore = Depends(store)) -> JobRecord:
-        get_job_or_404(job_id, db)
+    async def retry_job(job_id: str, request: Request, db: JobStore = Depends(store)) -> JobRecord:
+        get_job_or_404(job_id, db, current_user(request))
         try:
             return db.retry(job_id)
         except ValueError as exc:
@@ -163,7 +273,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def regenerate_docx(
         job_id: str, request: Request, db: JobStore = Depends(store)
     ) -> Message:
-        get_job_or_404(job_id, db)
+        get_job_or_404(job_id, db, current_user(request))
         job_dir = request.app.state.settings.jobs_dir / job_id
         markdown_path = job_dir / "transcript.md"
         if not markdown_path.exists():
@@ -178,7 +288,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request: Request,
         db: JobStore = Depends(store),
     ) -> FileResponse:
-        job = get_job_or_404(job_id, db)
+        job = get_job_or_404(job_id, db, current_user(request))
         formats = {
             "json": ("transcript.json", "application/json"),
             "md": ("transcript.md", "text/markdown"),

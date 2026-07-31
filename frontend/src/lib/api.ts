@@ -1,6 +1,8 @@
 import type {
   AudioTask,
   BackendJob,
+  Account,
+  AdminSummary,
   CreateTaskOptions,
   SaveMarkdownPayload,
   TaskStatus,
@@ -63,6 +65,7 @@ async function request<T>(
   try {
     response = await fetch(`${API_URL}${path}`, {
       ...init,
+      credentials: "include",
       headers: {
         ...(init?.body instanceof FormData
           ? {}
@@ -96,6 +99,68 @@ async function request<T>(
   if (responseType === "text") return (await response.text()) as T;
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
+}
+
+export function register(username: string, password: string): Promise<Account> {
+  return request<Account>("/auth/register", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export function login(username: string, password: string): Promise<Account> {
+  return request<Account>("/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export function logout(): Promise<void> {
+  return request<void>("/auth/logout", { method: "POST" });
+}
+
+export function getCurrentAccount(): Promise<Account> {
+  return request<Account>("/auth/me");
+}
+
+export function getAdminSummary(): Promise<AdminSummary> {
+  return request<AdminSummary>("/admin/summary");
+}
+
+export function getAdminUsers(): Promise<{ items: Account[]; total: number }> {
+  return request<{ items: Account[]; total: number }>("/admin/users");
+}
+
+export interface UsageEvent {
+  user_id: string;
+  job_id: string;
+  endpoint: string;
+  model: string;
+  usage: Record<string, unknown>;
+  raw_cost_usd: number | null;
+  billable_usd: number | null;
+  cost_status: "settled" | "pending";
+  created_at: string;
+}
+
+export function getAdminUsage(): Promise<{ items: UsageEvent[]; total: number }> {
+  return request<{ items: UsageEvent[]; total: number }>("/admin/usage");
+}
+
+export function topUpCredit(
+  username: string,
+  amount_usd: number,
+  note: string,
+): Promise<Account> {
+  return request<Account>("/admin/credits", {
+    method: "POST",
+    body: JSON.stringify({
+      username,
+      amount_usd,
+      note,
+      idempotency_key: crypto.randomUUID(),
+    }),
+  });
 }
 
 export async function createTask(

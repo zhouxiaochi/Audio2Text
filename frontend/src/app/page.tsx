@@ -1,5 +1,5 @@
-import { AudioWorkspace } from "@/components/audio-workspace";
+import { AppShell } from "@/components/app-shell";
 
 export default function Home() {
-  return <AudioWorkspace />;
+  return <AppShell />;
 }

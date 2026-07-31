@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 from backend.config import Settings
@@ -32,7 +31,7 @@ class Pipeline:
             self._progress(job.id, Stage.PROBING, 0.03)
             metadata = await probe(source)
             self.store.put_checkpoint(job.id, "probe", metadata)
-            self.store.update_job(job.id, metadata_json=json.dumps(metadata))
+            self.store.update_job(job.id, metadata=metadata)
 
         normalized = job_dir / "normalized.wav"
         if not normalized.exists():
@@ -61,7 +60,18 @@ class Pipeline:
                     Stage.TRANSCRIBING,
                     0.15 + 0.55 * index / max(1, len(chunks)),
                 )
-                segments = await self.remote.transcribe(Path(chunk["path"]), chunk["start"])
+                segments, usage, cost, request_id = await self.remote.transcribe(
+                    Path(chunk["path"]), chunk["start"]
+                )
+                self.store.record_usage(
+                    job.id,
+                    job.user_id,
+                    "/audio/transcriptions",
+                    self.settings.transcription_model,
+                    usage,
+                    cost,
+                    request_id,
+                )
                 saved = [segment.model_dump() for segment in segments]
                 self.store.put_checkpoint(job.id, key, saved)
             chunk_results.append([TranscriptSegment.model_validate(item) for item in saved])
@@ -79,7 +89,17 @@ class Pipeline:
         speaker_data = self.store.get_checkpoint(job.id, "speakers")
         if speaker_data is None:
             self._progress(job.id, Stage.SPEAKERS, 0.78)
-            speaker_result = await self.remote.infer_speakers(segments)
+            speaker_result, speaker_costs = await self.remote.infer_speakers(segments)
+            for usage, cost, request_id in speaker_costs:
+                self.store.record_usage(
+                    job.id,
+                    job.user_id,
+                    "/chat/completions",
+                    self.settings.speaker_model,
+                    usage,
+                    cost,
+                    request_id,
+                )
             speaker_data = speaker_result.model_dump()
             self.store.put_checkpoint(job.id, "speakers", speaker_data)
         speakers = {item["segment_id"]: item["speaker"] for item in speaker_data["turns"]}
@@ -89,7 +109,17 @@ class Pipeline:
         translation_data = self.store.get_checkpoint(job.id, "translations")
         if translation_data is None:
             self._progress(job.id, Stage.TRANSLATING, 0.86)
-            translation_result = await self.remote.translate_zh(segments)
+            translation_result, translation_costs = await self.remote.translate_zh(segments)
+            for usage, cost, request_id in translation_costs:
+                self.store.record_usage(
+                    job.id,
+                    job.user_id,
+                    "/chat/completions",
+                    self.settings.llm_model,
+                    usage,
+                    cost,
+                    request_id,
+                )
             translation_data = translation_result.model_dump()
             self.store.put_checkpoint(job.id, "translations", translation_data)
         translations = {
@@ -108,3 +138,4 @@ class Pipeline:
             progress=1.0,
             error=None,
         )
+        self.store.settle_job_cost(job.id, job.user_id)

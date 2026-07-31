@@ -172,11 +172,12 @@ API Key 或上传真实音频。
 doctl apps create --spec .do/app.yaml
 ```
 
-当前 App Platform 配置是无持久服务的公开演示版本：
+当前 App Platform 配置使用 MongoDB 持久保存用户、会话、任务状态、checkpoint 与用量账本，但音频和产物仍位于临时本地目录：
 
 - 本地文件系统在部署、重启或实例替换后会被清空；
-- SQLite、上传文件、checkpoint 和结果不会永久保存；
-- 仅允许一个排队或处理中的任务；
+- MongoDB 中的任务记录会保留；重启时因源文件丢失的未完成任务会显示为失败并要求重新上传；
+- 上传文件、音频中间产物和下载结果不会永久保存，接入 Spaces/S3 后才能跨重启恢复；
+- 每个账户仅允许一个排队或处理中的任务；
 - 已完成和失败任务默认保留 24 小时，并在下一次上传时清理；
 - 页面会提示用户立即下载结果；
 - 上传上限为 300 MiB，以降低 4 GiB 临时磁盘被填满的风险。
@@ -190,6 +191,10 @@ doctl apps create --spec .do/app.yaml
 后端组件全部通过 Runtime Environment Variables 配置：
 
 - `REMOTE_API_KEY`：必填，Secret/Encrypted。
+- `MONGODB_URI`、`MONGODB_DATABASE`：托管 MongoDB 连接；URI 必须设置为 Secret。
+- `SESSION_SECRET`：随机长字符串，Secret/Encrypted。
+- `ADMIN_INITIAL_USERNAME`、`ADMIN_INITIAL_PASSWORD`：仅用于首次引导管理员，均为 Secret/Encrypted。
+- `MINIMUM_UPLOAD_CREDIT_USD`：允许上传前账户必须具有的最低 USD 额度。
 - `REMOTE_BASE_URL`：默认 `https://openrouter.ai/api/v1`。
 - `TRANSCRIPTION_MODEL`：OpenRouter STT 模型。
 - `SPEAKER_MODEL`：说话人推断模型，默认 `openai/gpt-5-mini`。
@@ -201,6 +206,8 @@ doctl apps create --spec .do/app.yaml
 - `CHUNK_SECONDS`、`OVERLAP_SECONDS`：音频切片参数。
 - `LLM_BATCH_CHARACTERS`：LLM 文本批次大小。
 - `REQUEST_TIMEOUT_SECONDS`、`REMOTE_MAX_RETRIES`：远端请求策略。
+
+`.env.mongo.example` 仅用于变量名参考；真实值应放在本地忽略的 `.env.mongo` 或 DigitalOcean Secrets 中，绝不能提交 `mango` 等凭据文件。每次 OpenRouter 请求的 provider 实际 cost 可用时将按 5 倍计入账户；provider 未返回实际 cost 时只标记为待确认且不扣费。
 
 这些变量设置在唯一的 `web` 组件。前端生产环境使用同域 `/api`，不需要设置
 `NEXT_PUBLIC_API_URL`。

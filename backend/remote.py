@@ -58,7 +58,27 @@ class RemoteClient:
                 await asyncio.sleep(delay)
         raise RemoteError(f"remote request failed after retries: {last_error}")
 
-    async def transcribe(self, path: Path, offset: float = 0) -> list[TranscriptSegment]:
+    @staticmethod
+    def cost_metadata(response: httpx.Response) -> tuple[dict | None, float | None, str | None]:
+        """Extract provider-reported usage and cost without applying price estimates."""
+        payload = response.json()
+        usage = payload.get("usage")
+        raw_cost = usage.get("cost") if isinstance(usage, dict) else None
+        if raw_cost is None and isinstance(usage, dict):
+            raw_cost = usage.get("total_cost")
+        if raw_cost is None:
+            raw_cost = payload.get("cost")
+        if raw_cost is None:
+            raw_cost = response.headers.get("x-openrouter-cost")
+        try:
+            cost = float(raw_cost) if raw_cost is not None else None
+        except (TypeError, ValueError):
+            cost = None
+        return usage if isinstance(usage, dict) else None, cost, response.headers.get("x-request-id")
+
+    async def transcribe(
+        self, path: Path, offset: float = 0
+    ) -> tuple[list[TranscriptSegment], dict | None, float | None, str | None]:
         with path.open("rb") as audio:
             response = await self._request(
                 "POST",
@@ -92,7 +112,7 @@ class RemoteClient:
             )
             for index, segment in enumerate(payload.get("segments", []))
             if segment.get("text", "").strip()
-        ]
+        ], *self.cost_metadata(response)
 
     @staticmethod
     def _extract_json(content: str) -> dict:
@@ -101,7 +121,9 @@ class RemoteClient:
             content = content.split("\n", 1)[1].rsplit("```", 1)[0]
         return json.loads(content)
 
-    async def _structured_chat(self, prompt: str, schema: type[T], model: str) -> T:
+    async def _structured_chat(
+        self, prompt: str, schema: type[T], model: str
+    ) -> tuple[T, dict | None, float | None, str | None]:
         last_error: Exception | None = None
         messages = [
             {
@@ -122,7 +144,7 @@ class RemoteClient:
             )
             try:
                 content = response.json()["choices"][0]["message"]["content"]
-                return schema.model_validate(self._extract_json(content))
+                return schema.model_validate(self._extract_json(content)), *self.cost_metadata(response)
             except (KeyError, IndexError, TypeError, json.JSONDecodeError, ValidationError) as exc:
                 last_error = exc
                 messages.extend(
@@ -147,7 +169,7 @@ class RemoteClient:
         items_attribute: str,
         id_attribute: str,
         model: str,
-    ) -> T:
+    ) -> tuple[T, dict | None, float | None, str | None]:
         last_ids: set[int] = set()
         for attempt in range(3):
             suffix = ""
@@ -158,23 +180,27 @@ class RemoteClient:
                     f"{sorted(expected)}. "
                     f"Missing IDs were: {missing}. Do not duplicate IDs."
                 )
-            result = await self._structured_chat(prompt + suffix, schema, model)
+            result, usage, cost, request_id = await self._structured_chat(prompt + suffix, schema, model)
             items = getattr(result, items_attribute)
             ids = [getattr(item, id_attribute) for item in items]
             last_ids = set(ids)
             if last_ids == expected and len(ids) == len(expected):
-                return result
+                return result, usage, cost, request_id
         raise RemoteError(
             f"LLM did not return exactly one item per segment; expected {sorted(expected)}, "
             f"received {sorted(last_ids)}"
         )
 
-    async def infer_speakers(self, segments: list[TranscriptSegment]) -> SpeakerInference:
+    async def infer_speakers(
+        self, segments: list[TranscriptSegment]
+    ) -> tuple[SpeakerInference, list[tuple[dict | None, float | None, str | None]]]:
         turns: list[SpeakerTurn] = []
+        costs = []
         for batch in self._batches(segments):
-            result = await self._infer_speaker_batch(batch)
+            result, usage, cost, request_id = await self._infer_speaker_batch(batch)
             turns.extend(result.turns)
-        return SpeakerInference(turns=turns)
+            costs.append((usage, cost, request_id))
+        return SpeakerInference(turns=turns), costs
 
     def _batches(self, segments: list[TranscriptSegment]) -> list[list[TranscriptSegment]]:
         """Split long transcripts without splitting an individual timed segment."""
@@ -196,7 +222,7 @@ class RemoteClient:
 
     async def _infer_speaker_batch(
         self, segments: list[TranscriptSegment]
-    ) -> SpeakerInference:
+    ) -> tuple[SpeakerInference, dict | None, float | None, str | None]:
         rows = [
             {"segment_id": segment.id, "start": segment.start, "end": segment.end, "text": segment.text}
             for segment in segments
@@ -217,16 +243,20 @@ class RemoteClient:
             self.settings.speaker_model,
         )
 
-    async def translate_zh(self, segments: list[TranscriptSegment]) -> TranslationResult:
+    async def translate_zh(
+        self, segments: list[TranscriptSegment]
+    ) -> tuple[TranslationResult, list[tuple[dict | None, float | None, str | None]]]:
         translations: list[TranslationItem] = []
+        costs = []
         for batch in self._batches(segments):
-            result = await self._translate_batch(batch)
+            result, usage, cost, request_id = await self._translate_batch(batch)
             translations.extend(result.translations)
-        return TranslationResult(translations=translations)
+            costs.append((usage, cost, request_id))
+        return TranslationResult(translations=translations), costs
 
     async def _translate_batch(
         self, segments: list[TranscriptSegment]
-    ) -> TranslationResult:
+    ) -> tuple[TranslationResult, dict | None, float | None, str | None]:
         rows = [
             {
                 "segment_id": segment.id,
