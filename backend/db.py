@@ -1,12 +1,11 @@
 import hashlib
-import shutil
-import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from pymongo import ASCENDING, DESCENDING, MongoClient, ReturnDocument
 from pymongo.collection import Collection
+from pymongo.errors import DuplicateKeyError
 
 from backend.models import JobRecord, JobStatus, Stage, utc_now
 
@@ -46,14 +45,23 @@ class JobStore:
         data.pop("_id", None)
         return JobRecord.model_validate(data)
 
-    def create_job(self, job_id: str, user_id: str, filename: str, source_path: Path) -> JobRecord:
+    def create_job(
+        self,
+        job_id: str,
+        user_id: str,
+        filename: str,
+        source_object_key: str,
+        source_path: Path | None = None,
+    ) -> JobRecord:
         now = utc_now()
         self.jobs.insert_one(
             {
                 "id": job_id,
                 "user_id": user_id,
                 "original_filename": filename,
-                "source_path": str(source_path),
+                "source_object_key": source_object_key,
+                "source_path": str(source_path) if source_path else None,
+                "artifacts": {},
                 "status": JobStatus.QUEUED,
                 "stage": Stage.QUEUED,
                 "progress": 0,
@@ -72,6 +80,12 @@ class JobStore:
             raise KeyError(job_id)
         return self._job(row)
 
+    def get_user_job(self, user_id: str, job_id: str) -> JobRecord:
+        row = self.jobs.find_one({"id": job_id, "user_id": user_id})
+        if row is None:
+            raise KeyError(job_id)
+        return self._job(row)
+
     def list_jobs(
         self, user_id: str | None = None, limit: int = 100, offset: int = 0
     ) -> tuple[list[JobRecord], int]:
@@ -86,21 +100,16 @@ class JobStore:
             query["user_id"] = user_id
         return self.jobs.count_documents(query)
 
-    def cleanup_expired(self, jobs_dir: Path, uploads_dir: Path, retention_hours: int) -> int:
-        """Delete terminal jobs and artifacts older than the configured demo retention."""
-        cutoff = (datetime.now(timezone.utc) - timedelta(hours=retention_hours)).isoformat()
-        rows = list(self.jobs.find({"status": {"$in": [JobStatus.COMPLETED, JobStatus.FAILED]}, "updated_at": {"$lt": cutoff}}))
-        for row in rows:
-            Path(row["source_path"]).unlink(missing_ok=True)
-            shutil.rmtree(jobs_dir / row["id"], ignore_errors=True)
-        if rows:
-            ids = [row["id"] for row in rows]
-            self.checkpoints.delete_many({"job_id": {"$in": ids}})
-            self.jobs.delete_many({"id": {"$in": ids}})
-        return len(rows)
-
     def update_job(self, job_id: str, **values: Any) -> None:
-        allowed = {"status", "stage", "progress", "error", "retry_count", "metadata"}
+        allowed = {
+            "status",
+            "stage",
+            "progress",
+            "error",
+            "retry_count",
+            "metadata",
+            "artifacts",
+        }
         values = {key: value for key, value in values.items() if key in allowed}
         if not values:
             return
@@ -116,20 +125,15 @@ class JobStore:
         )
         return self._job(row) if row else None
 
-    def recover_incomplete(self) -> int:
-        rows = list(self.jobs.find({"status": {"$in": [JobStatus.QUEUED, JobStatus.PROCESSING]}}))
-        recovered = 0
-        for row in rows:
-            source = Path(row["source_path"])
-            if source.exists():
-                self.jobs.update_one({"_id": row["_id"]}, {"$set": {"status": JobStatus.QUEUED, "updated_at": utc_now()}})
-                recovered += 1
-            else:
-                self.jobs.update_one(
-                    {"_id": row["_id"]},
-                    {"$set": {"status": JobStatus.FAILED, "error": "服务重启后临时源文件已丢失，请重新上传。", "updated_at": utc_now()}},
-                )
-        return recovered
+    def list_incomplete(self) -> list[JobRecord]:
+        rows = self.jobs.find(
+            {"status": {"$in": [JobStatus.QUEUED, JobStatus.PROCESSING]}}
+        )
+        return [self._job(row) for row in rows]
+
+    def delete_job_records(self, job_id: str) -> None:
+        self.checkpoints.delete_many({"job_id": job_id})
+        self.jobs.delete_one({"id": job_id})
 
     def retry(self, job_id: str) -> JobRecord:
         job = self.get_job(job_id)

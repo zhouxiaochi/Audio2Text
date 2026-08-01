@@ -8,7 +8,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Runtime configuration loaded from environment variables."""
 
-    model_config = SettingsConfigDict(extra="ignore", case_sensitive=False)
+    model_config = SettingsConfigDict(
+        extra="ignore", case_sensitive=False, populate_by_name=True
+    )
 
     data_dir: Path = Path("data")
     mongodb_uri: str = ""
@@ -47,6 +49,24 @@ class Settings(BaseSettings):
     worker_poll_seconds: float = 0.5
     max_active_jobs: int = 1
     retention_hours: int = 24
+    spaces_endpoint: str = ""
+    spaces_region: str = ""
+    spaces_bucket: str = ""
+    spaces_access_key_id: str = ""
+    spaces_secret_access_key: str = ""
+    spaces_presigned_url_ttl_seconds: int = 600
+
+    @property
+    def spaces_enabled(self) -> bool:
+        return all(
+            (
+                self.spaces_endpoint,
+                self.spaces_region,
+                self.spaces_bucket,
+                self.spaces_access_key_id,
+                self.spaces_secret_access_key,
+            )
+        )
 
     @property
     def uploads_dir(self) -> Path:

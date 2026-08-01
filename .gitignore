@@ -3,17 +3,6 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .venv/
-data/
-*.sqlite3*
-.env
-.env.local
-.env.mongo
-mango
-.venv/
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.ruff_cache/
 .coverage
 htmlcov/
 
@@ -26,6 +15,14 @@ data/
 *.db
 *.sqlite
 *.sqlite3
+*.sqlite3*
+
+.env
+.env.*
+*.env
+!*.env.example
+!.env.example
+mango
 
 .DS_Store
 Thumbs.db

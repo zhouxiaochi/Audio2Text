@@ -714,6 +714,7 @@ button:disabled {
 }
 
 .secondary-button,
+.danger-button,
 .download-group button {
   align-items: center;
   background: white;
@@ -735,6 +736,24 @@ button:disabled {
 .download-group svg {
   height: 15px;
   width: 15px;
+}
+
+.danger-button {
+  background: #fff8f5;
+  border-color: #c98b78;
+  color: #873f2b;
+}
+
+.danger-button:hover {
+  background: #f9e9e3;
+  border-color: #a95942;
+}
+
+.danger-button:disabled,
+.secondary-button:disabled,
+.download-group button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .download-group button {

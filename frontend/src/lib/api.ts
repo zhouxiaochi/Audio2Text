@@ -189,6 +189,12 @@ export async function retryTask(taskId: string): Promise<AudioTask> {
   return withMarkdown(job);
 }
 
+export function deleteTask(taskId: string): Promise<void> {
+  return request<{ message: string }>(`/jobs/${encodeURIComponent(taskId)}`, {
+    method: "DELETE",
+  }).then(() => undefined);
+}
+
 export function saveMarkdown(
   taskId: string,
   payload: SaveMarkdownPayload,

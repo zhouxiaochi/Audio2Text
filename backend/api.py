@@ -1,12 +1,14 @@
 import asyncio
 import re
+import shutil
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from backend.config import Settings, get_settings
 from backend.db import JobStore
@@ -17,13 +19,22 @@ from backend.models import (
     CreditTopUp,
     JobCreateResponse,
     JobList,
+    JobPublic,
     JobRecord,
+    JobStatus,
     MarkdownPayload,
     Message,
     UserPublic,
 )
 from backend.pipeline import Pipeline
 from backend.remote import RemoteClient
+from backend.storage import (
+    LocalStorage,
+    SpacesStorage,
+    Storage,
+    artifact_object_key,
+    source_object_key,
+)
 from backend.worker import Worker
 
 
@@ -40,6 +51,18 @@ async def lifespan(app: FastAPI):
         settings.mongodb_uri, settings.mongodb_database
     )
     store.initialize()
+    storage = getattr(app.state, "storage", None)
+    if storage is None:
+        if settings.spaces_enabled:
+            storage = SpacesStorage(
+                settings.spaces_endpoint,
+                settings.spaces_region,
+                settings.spaces_bucket,
+                settings.spaces_access_key_id,
+                settings.spaces_secret_access_key,
+            )
+        else:
+            storage = LocalStorage(settings.data_dir / "storage")
     if settings.admin_initial_username and settings.admin_initial_password:
         if store.get_user_by_username(settings.admin_initial_username) is None:
             store.create_user(
@@ -48,9 +71,10 @@ async def lifespan(app: FastAPI):
                 role="admin",
             )
     remote = RemoteClient(settings)
-    pipeline = Pipeline(settings, store, remote)
-    worker = Worker(settings, store, pipeline)
+    pipeline = Pipeline(settings, store, remote, storage)
+    worker = Worker(settings, store, pipeline, storage)
     app.state.store = store
+    app.state.storage = storage
     app.state.remote = remote
     app.state.worker = worker
     task = asyncio.create_task(worker.run(), name="audio2text-worker")
@@ -64,9 +88,14 @@ async def lifespan(app: FastAPI):
         store.close()
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    storage: Storage | None = None,
+) -> FastAPI:
     app = FastAPI(title="Audio2Text API", version="0.1.0", lifespan=lifespan)
     app.state.settings = settings or get_settings()
+    if storage is not None:
+        app.state.storage = storage
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[app.state.settings.frontend_origin],
@@ -80,11 +109,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def get_job_or_404(job_id: str, db: JobStore, user: dict) -> JobRecord:
         try:
-            job = db.get_job(job_id)
+            job = (
+                db.get_job(job_id)
+                if user["role"] == "admin"
+                else db.get_user_job(str(user["_id"]), job_id)
+            )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="任务不存在或已过期。") from exc
-        if user["role"] != "admin" and job.user_id != str(user["_id"]):
-            raise HTTPException(status_code=403, detail="无权访问此任务。")
         return job
 
     @app.get("/health", response_model=Message)
@@ -94,9 +125,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/deployment", response_model=dict[str, str | bool | int])
     async def deployment(request: Request) -> dict[str, str | bool | int]:
         settings: Settings = request.app.state.settings
+        storage: Storage = request.app.state.storage
         return {
-            "storage": "ephemeral",
-            "persistent": False,
+            "storage": storage.name,
+            "persistent": storage.persistent,
             "retention_hours": settings.retention_hours,
             "max_active_jobs": settings.max_active_jobs,
         }
@@ -191,7 +223,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 status_code=402,
                 detail=f"余额不足，上传任务至少需要 ${settings.minimum_upload_credit_usd:.2f} 额度。",
             )
-        db.cleanup_expired(settings.jobs_dir, settings.uploads_dir, settings.retention_hours)
         if db.count_active(user_id) >= settings.max_active_jobs:
             raise HTTPException(
                 status_code=429,
@@ -202,7 +233,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if extension not in settings.allowed_extensions:
             raise HTTPException(status_code=415, detail="unsupported media extension")
         job_id = str(uuid.uuid4())
-        destination = settings.uploads_dir / f"{job_id}{extension}"
+        destination = settings.uploads_dir / f"{job_id}{extension}.tmp"
+        key = source_object_key(user_id, job_id, extension)
+        storage: Storage = request.app.state.storage
         total = 0
         try:
             with destination.open("xb") as output:
@@ -213,11 +246,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     output.write(chunk)
             if total == 0:
                 raise HTTPException(status_code=400, detail="empty upload")
-            job = db.create_job(job_id, user_id, filename, destination)
+            storage.put_file(key, destination, user_id, job_id)
+            try:
+                job = db.create_job(job_id, user_id, filename, key)
+            except Exception:
+                storage.delete_prefix(user_id, job_id)
+                raise
         except Exception:
             destination.unlink(missing_ok=True)
             raise
         finally:
+            destination.unlink(missing_ok=True)
             await file.close()
         return JobCreateResponse(id=job.id, status=job.status)
 
@@ -234,19 +273,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return JobList(items=items, total=total)
 
-    @app.get("/jobs/{job_id}", response_model=JobRecord)
-    async def get_job(job_id: str, request: Request, db: JobStore = Depends(store)) -> JobRecord:
+    @app.get("/jobs/{job_id}", response_model=JobPublic)
+    async def get_job(
+        job_id: str, request: Request, db: JobStore = Depends(store)
+    ) -> JobRecord:
         return get_job_or_404(job_id, db, current_user(request))
 
     @app.get("/jobs/{job_id}/markdown", response_class=PlainTextResponse)
     async def get_markdown(
         job_id: str, request: Request, db: JobStore = Depends(store)
     ) -> str:
-        get_job_or_404(job_id, db, current_user(request))
-        path = request.app.state.settings.jobs_dir / job_id / "transcript.md"
-        if not path.exists():
+        job = get_job_or_404(job_id, db, current_user(request))
+        key = job.artifacts.get("md") or artifact_object_key(job.user_id, job.id, "md")
+        storage: Storage = request.app.state.storage
+        if not storage.exists(key, job.user_id, job.id):
             raise HTTPException(status_code=409, detail="Markdown is not available")
-        return path.read_text(encoding="utf-8")
+        return storage.get_bytes(key, job.user_id, job.id).decode("utf-8")
 
     @app.put("/jobs/{job_id}/markdown", response_model=Message)
     async def save_markdown(
@@ -255,13 +297,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request: Request,
         db: JobStore = Depends(store),
     ) -> Message:
-        get_job_or_404(job_id, db, current_user(request))
-        path = request.app.state.settings.jobs_dir / job_id / "transcript.md"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(payload.markdown, encoding="utf-8")
+        job = get_job_or_404(job_id, db, current_user(request))
+        key = artifact_object_key(job.user_id, job.id, "md")
+        request.app.state.storage.put_bytes(
+            key, payload.markdown.encode("utf-8"), job.user_id, job.id
+        )
+        db.update_job(job.id, artifacts={**job.artifacts, "md": key})
         return Message(message="Markdown saved")
 
-    @app.post("/jobs/{job_id}/retry", response_model=JobRecord)
+    @app.post("/jobs/{job_id}/retry", response_model=JobPublic)
     async def retry_job(job_id: str, request: Request, db: JobStore = Depends(store)) -> JobRecord:
         get_job_or_404(job_id, db, current_user(request))
         try:
@@ -273,12 +317,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def regenerate_docx(
         job_id: str, request: Request, db: JobStore = Depends(store)
     ) -> Message:
-        get_job_or_404(job_id, db, current_user(request))
-        job_dir = request.app.state.settings.jobs_dir / job_id
-        markdown_path = job_dir / "transcript.md"
-        if not markdown_path.exists():
+        job = get_job_or_404(job_id, db, current_user(request))
+        storage: Storage = request.app.state.storage
+        markdown_key = job.artifacts.get("md") or artifact_object_key(
+            job.user_id, job.id, "md"
+        )
+        if not storage.exists(markdown_key, job.user_id, job.id):
             raise HTTPException(status_code=409, detail="Markdown is not available")
-        render_docx(markdown_path.read_text(encoding="utf-8"), job_dir / "transcript.docx")
+        job_dir = request.app.state.settings.jobs_dir / job_id
+        docx_path = job_dir / "transcript.docx"
+        render_docx(
+            storage.get_bytes(markdown_key, job.user_id, job.id).decode("utf-8"),
+            docx_path,
+        )
+        docx_key = artifact_object_key(job.user_id, job.id, "docx")
+        storage.put_file(docx_key, docx_path, job.user_id, job.id)
+        db.update_job(job.id, artifacts={**job.artifacts, "docx": docx_key})
         return Message(message="DOCX regenerated")
 
     @app.get("/jobs/{job_id}/download/{format}")
@@ -287,7 +341,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         format: str,
         request: Request,
         db: JobStore = Depends(store),
-    ) -> FileResponse:
+    ) -> StreamingResponse:
         job = get_job_or_404(job_id, db, current_user(request))
         formats = {
             "json": ("transcript.json", "application/json"),
@@ -299,12 +353,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
         if format not in formats:
             raise HTTPException(status_code=404, detail="unsupported download format")
-        filename, media_type = formats[format]
-        path = request.app.state.settings.jobs_dir / job_id / filename
-        if not path.exists():
+        _, media_type = formats[format]
+        key = job.artifacts.get(format) or artifact_object_key(job.user_id, job.id, format)
+        storage: Storage = request.app.state.storage
+        if not storage.exists(key, job.user_id, job.id):
             raise HTTPException(status_code=409, detail=f"{format} artifact is not available")
         stem = Path(job.original_filename).stem
-        return FileResponse(path, media_type=media_type, filename=f"{stem}.{format}")
+        download_name = f"{stem}.{format}"
+        return StreamingResponse(
+            iter([storage.get_bytes(key, job.user_id, job.id)]),
+            media_type=media_type,
+            headers={
+                "Content-Disposition": (
+                    f"attachment; filename=transcript.{format}; "
+                    f"filename*=UTF-8''{quote(download_name)}"
+                )
+            },
+        )
+
+    @app.delete("/jobs/{job_id}", response_model=Message)
+    async def delete_job(
+        job_id: str, request: Request, db: JobStore = Depends(store)
+    ) -> Message:
+        job = get_job_or_404(job_id, db, current_user(request))
+        if job.status in {JobStatus.QUEUED, JobStatus.PROCESSING}:
+            raise HTTPException(status_code=409, detail="任务处理中，无法删除。")
+        db.update_job(job.id, status=JobStatus.DELETING)
+        try:
+            request.app.state.storage.delete_prefix(job.user_id, job.id)
+            db.delete_job_records(job.id)
+            shutil.rmtree(request.app.state.settings.jobs_dir / job.id, ignore_errors=True)
+        except Exception:
+            db.update_job(job.id, status=job.status)
+            raise
+        return Message(message="任务已删除。")
 
     return app
 

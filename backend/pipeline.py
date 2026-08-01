@@ -7,15 +7,19 @@ from backend.media import ensure_tools, normalize, probe, split_chunks
 from backend.merge import merge_segments
 from backend.models import JobRecord, JobStatus, Stage, TranscriptSegment
 from backend.remote import RemoteClient
+from backend.storage import Storage, artifact_object_key
 
 
 class Pipeline:
     """Restart-safe transcription pipeline with per-stage and per-chunk checkpoints."""
 
-    def __init__(self, settings: Settings, store: JobStore, remote: RemoteClient):
+    def __init__(
+        self, settings: Settings, store: JobStore, remote: RemoteClient, storage: Storage
+    ):
         self.settings = settings
         self.store = store
         self.remote = remote
+        self.storage = storage
 
     def _progress(self, job_id: str, stage: Stage, progress: float) -> None:
         self.store.update_job(job_id, stage=stage, progress=progress)
@@ -24,7 +28,14 @@ class Pipeline:
         ensure_tools()
         job_dir = self.settings.jobs_dir / job.id
         job_dir.mkdir(parents=True, exist_ok=True)
-        source = Path(job.source_path)
+        if not job.source_object_key:
+            raise RuntimeError("job source object is missing")
+        extension = Path(job.source_object_key).suffix
+        source = job_dir / f"source{extension}"
+        if not source.exists():
+            self.storage.download_file(
+                job.source_object_key, source, job.user_id, job.id
+            )
 
         metadata = self.store.get_checkpoint(job.id, "probe")
         if metadata is None:
@@ -131,11 +142,24 @@ class Pipeline:
 
         self._progress(job.id, Stage.RENDERING, 0.95)
         write_artifacts(job_dir, self.store.get_job(job.id), segments)
+        artifacts = {
+            format: artifact_object_key(job.user_id, job.id, format)
+            for format in ("json", "md", "docx")
+        }
+        for format, key in artifacts.items():
+            self.storage.put_file(
+                key, job_dir / f"transcript.{format}", job.user_id, job.id
+            )
+        if not all(
+            self.storage.exists(key, job.user_id, job.id) for key in artifacts.values()
+        ):
+            raise RuntimeError("one or more final artifacts were not stored")
         self.store.update_job(
             job.id,
             status=JobStatus.COMPLETED,
             stage=Stage.COMPLETED,
             progress=1.0,
             error=None,
+            artifacts=artifacts,
         )
         self.store.settle_job_cost(job.id, job.user_id)

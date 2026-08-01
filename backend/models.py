@@ -14,6 +14,7 @@ class JobStatus(StrEnum):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
+    DELETING = "deleting"
 
 
 class Stage(StrEnum):
@@ -81,7 +82,27 @@ class JobRecord(BaseModel):
     id: str
     user_id: str
     original_filename: str
-    source_path: str
+    source_object_key: str | None = None
+    source_path: str | None = None
+    artifacts: dict[str, str] = Field(default_factory=dict)
+    status: JobStatus
+    stage: str
+    progress: float = Field(ge=0, le=1)
+    error: str | None = None
+    retry_count: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+    updated_at: str
+
+
+class JobPublic(BaseModel):
+    """Job fields safe to expose through user and admin APIs."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    user_id: str
+    original_filename: str
     status: JobStatus
     stage: str
     progress: float = Field(ge=0, le=1)
@@ -93,7 +114,7 @@ class JobRecord(BaseModel):
 
 
 class JobList(BaseModel):
-    items: list[JobRecord]
+    items: list[JobPublic]
     total: int
 
 

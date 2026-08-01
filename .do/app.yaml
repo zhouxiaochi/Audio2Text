@@ -83,6 +83,30 @@ services:
         value: "24"
         scope: RUN_TIME
         type: GENERAL
+      - key: SPACES_ENDPOINT
+        value: SET_IN_DIGITALOCEAN_CONSOLE
+        scope: RUN_TIME
+        type: SECRET
+      - key: SPACES_REGION
+        value: SET_IN_DIGITALOCEAN_CONSOLE
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SPACES_BUCKET
+        value: SET_IN_DIGITALOCEAN_CONSOLE
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SPACES_ACCESS_KEY_ID
+        value: SET_IN_DIGITALOCEAN_CONSOLE
+        scope: RUN_TIME
+        type: SECRET
+      - key: SPACES_SECRET_ACCESS_KEY
+        value: SET_IN_DIGITALOCEAN_CONSOLE
+        scope: RUN_TIME
+        type: SECRET
+      - key: SPACES_PRESIGNED_URL_TTL_SECONDS
+        value: "600"
+        scope: RUN_TIME
+        type: GENERAL
       - key: REMOTE_BASE_URL
         value: https://openrouter.ai/api/v1
         scope: RUN_TIME

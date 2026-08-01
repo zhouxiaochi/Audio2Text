@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   createTask,
+  deleteTask,
   downloadArtifact,
   getTask,
   regenerateDocx,
@@ -205,17 +206,7 @@ export function AudioWorkspace({ account }: { account: Account }) {
     setBusy(`download-${format}`);
     setLocalError(null);
     try {
-      let blob: Blob;
-      if (format === "markdown") {
-        blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
-      } else if (format === "json") {
-        blob = new Blob(
-          [JSON.stringify({ ...task, markdown }, null, 2)],
-          { type: "application/json;charset=utf-8" },
-        );
-      } else {
-        blob = await downloadArtifact(task.id, format);
-      }
+      const blob = await downloadArtifact(task.id, format);
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
@@ -227,7 +218,30 @@ export function AudioWorkspace({ account }: { account: Account }) {
     } catch (error) {
       setLocalError(error instanceof Error ? error.message : "下载失败。");
     } finally {
-      setBusy(null);
+      setBusy((current) => (current === `download-${format}` ? null : current));
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!task) return;
+    const confirmed = window.confirm(
+      `确定删除任务“${task.filename ?? task.id}”吗？归档文件和转写结果将永久删除，且无法恢复。`,
+    );
+    if (!confirmed) return;
+    setBusy("delete");
+    setLocalError(null);
+    setNotice(null);
+    try {
+      await deleteTask(task.id);
+      setTask(null);
+      setMarkdown("");
+      setFile(null);
+      if (inputRef.current) inputRef.current.value = "";
+      setNotice("任务及其私有归档已删除");
+    } catch (error) {
+      setLocalError(error instanceof Error ? error.message : "删除任务失败。");
+    } finally {
+      setBusy((current) => (current === "delete" ? null : current));
     }
   };
 
@@ -257,7 +271,7 @@ export function AudioWorkspace({ account }: { account: Account }) {
         <h1>让每段声音，都成为<br /><span>清晰的文字。</span></h1>
         <p className="hero-copy">上传录音，自动完成转写、翻译与文档整理。<br className="desktop-break" />处理费用按 OpenRouter 实际成本的 5 倍结算。</p>
         <p className="deployment-warning">
-          演示环境使用临时存储：部署或服务重启会清除任务，请完成后立即下载产物。
+          音频与转写产物归档到私有持久存储，并在你主动删除任务前保留。
         </p>
       </section>
 
@@ -355,6 +369,9 @@ export function AudioWorkspace({ account }: { account: Account }) {
               <button className="secondary-button" disabled={busy === "retry"} onClick={handleRetry} type="button">
                 <RefreshIcon /> {busy === "retry" ? "正在重试…" : "重试任务"}
               </button>
+              <button className="danger-button" disabled={busy === "delete"} onClick={handleDelete} type="button">
+                {busy === "delete" ? "正在删除…" : "删除任务"}
+              </button>
             </div>
           ) : (
             <>
@@ -412,6 +429,7 @@ export function AudioWorkspace({ account }: { account: Account }) {
               <div>
                 <button className="secondary-button" disabled={busy === "save"} onClick={handleSave} type="button"><SaveIcon />{busy === "save" ? "保存中…" : "保存"}</button>
                 <button className="secondary-button" disabled={busy === "docx"} onClick={handleRegenerate} type="button"><RefreshIcon />{busy === "docx" ? "生成中…" : "重新生成 DOCX"}</button>
+                <button className="danger-button" disabled={busy === "delete"} onClick={handleDelete} type="button">{busy === "delete" ? "正在删除…" : "删除任务"}</button>
               </div>
               <div className="download-group">
                 {(["markdown", "json", "docx"] as const).map((format) => (
